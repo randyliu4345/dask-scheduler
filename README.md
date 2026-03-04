@@ -167,11 +167,32 @@ The test suite covers:
 
 ---
 
+## Dynamic Re-scheduling
+
+The scheduler now supports **dynamic re-scheduling** during execution:
+
+- **Spot interruption detection**: When a spot task fails, it's automatically detected and resubmitted to on-demand
+- **Slack recomputation**: As tasks complete (early or late), slack is recomputed for remaining tasks
+- **Dynamic reassignment**: Remaining tasks may be reassigned between spot and on-demand based on updated slack
+
+### Testing Dynamic Re-scheduling
+
+```bash
+# Simulate spot interruptions
+python example.py --deadline 30 --simulate-interruptions B,C
+
+# Test early completion (tasks complete faster)
+python example.py --deadline 30 --early-completion 0.5
+
+# Test late completion (tasks complete slower)
+python example.py --deadline 30 --early-completion 1.5
+```
+
+See `example_configs.md` for more configuration examples.
+
 ## What This MVP Skips
 
 These are intentionally left for future iterations:
-
-- **Dynamic re-scheduling** mid-run when tasks finish early/late or spot instances are interrupted
 - **Knapsack / greedy marginal critical-path** heuristics (the slack threshold is sufficient for a baseline)
 - **Sensitivity analysis** and cost tracking / reporting
 - **Automatic retry** on spot interruption with fallback to on-demand

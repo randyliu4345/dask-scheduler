@@ -149,3 +149,124 @@ def critical_path(
         if abs(lst[task] - est) < 1e-9:
             cp.append(task)
     return cp
+
+
+# ---------------------------------------------------------------------------
+# Dynamic re-scheduling support
+# ---------------------------------------------------------------------------
+
+
+def compute_slack_with_actuals(
+    dag: Dict[str, List[str]],
+    runtimes: Dict[str, float],
+    deadline: float,
+    completion_times: Dict[str, float],
+    elapsed_time: float,
+) -> Dict[str, float]:
+    """Compute slack for remaining tasks given actual completion times.
+
+    For completed tasks, use their actual completion times.
+    For remaining tasks, compute slack based on current time and remaining deadline.
+
+    Parameters
+    ----------
+    dag : dict[str, list[str]]
+        Task DAG.
+    runtimes : dict[str, float]
+        Profiled runtimes for all tasks.
+    deadline : float
+        Original deadline.
+    completion_times : dict[str, float]
+        Actual completion times (wall-clock) for completed tasks.
+    elapsed_time : float
+        Current elapsed wall-clock time.
+
+    Returns
+    -------
+    dict[str, float]
+        Slack for each task. Completed tasks have slack = 0.
+    """
+    completed = set(completion_times.keys())
+    remaining = set(dag.keys()) - completed
+
+    if not remaining:
+        # All tasks completed
+        return {task: 0.0 for task in dag}
+
+    # Normalize completion times to relative times (starting from 0)
+    # Use elapsed_time as the reference point (when execution started)
+    if completion_times:
+        # Convert absolute completion times to relative times
+        relative_completion = {
+            task: time - elapsed_time for task, time in completion_times.items()
+        }
+        # Ensure non-negative (tasks can't complete before start)
+        relative_completion = {
+            task: max(0.0, rel_time) for task, rel_time in relative_completion.items()
+        }
+    else:
+        relative_completion = {}
+
+    # Compute earliest finish times using actual completion times
+    eft: Dict[str, float] = {}
+    for task in topo_sort(dag):
+        if task in completed:
+            # Use actual completion time (relative to start)
+            eft[task] = relative_completion[task]
+        else:
+            deps = dag[task]
+            if deps:
+                # Start after latest dependency finishes
+                start = max(
+                    (eft.get(d, 0.0) for d in deps),
+                    default=0.0,
+                )
+            else:
+                # Root task - can start now (at elapsed_time, which is 0 relative)
+                start = 0.0
+            eft[task] = start + runtimes[task]
+
+    # Compute latest start times for remaining tasks
+    # Adjust deadline based on elapsed time
+    remaining_deadline = deadline - elapsed_time
+    if remaining_deadline <= 0:
+        # Deadline already passed - all remaining tasks have negative slack
+        slack: Dict[str, float] = {}
+        for task in dag:
+            if task in completed:
+                slack[task] = 0.0
+            else:
+                est = eft[task] - runtimes[task]
+                slack[task] = remaining_deadline - est
+        return slack
+
+    successors = _build_successors(dag)
+    lst: Dict[str, float] = {}
+
+    # Process in reverse topological order
+    for task in reversed(topo_sort(dag)):
+        if task in completed:
+            # Already finished - use its actual start time
+            lst[task] = eft[task] - runtimes[task]
+        else:
+            succs = successors[task]
+            remaining_succs = [s for s in succs if s not in completed]
+            if not remaining_succs:
+                # All successors completed or no successors
+                lst[task] = remaining_deadline - runtimes[task]
+            else:
+                lst[task] = min(
+                    (lst.get(s, remaining_deadline) for s in remaining_succs),
+                    default=remaining_deadline,
+                ) - runtimes[task]
+
+    # Compute slack
+    slack = {}
+    for task in dag:
+        if task in completed:
+            slack[task] = 0.0
+        else:
+            est = eft[task] - runtimes[task]
+            slack[task] = lst[task] - est
+
+    return slack
