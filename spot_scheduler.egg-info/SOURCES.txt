@@ -1,0 +1,14 @@
+README.md
+pyproject.toml
+spot_scheduler/__init__.py
+spot_scheduler/assignment.py
+spot_scheduler/dag.py
+spot_scheduler/plugin.py
+spot_scheduler/runner.py
+spot_scheduler.egg-info/PKG-INFO
+spot_scheduler.egg-info/SOURCES.txt
+spot_scheduler.egg-info/dependency_links.txt
+spot_scheduler.egg-info/requires.txt
+spot_scheduler.egg-info/top_level.txt
+tests/test_assignment.py
+tests/test_dag.py

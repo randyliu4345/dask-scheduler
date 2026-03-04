@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spot-scheduler"
+version = "0.1.0"
+description = "Dask scheduler plugin for deadline-aware spot vs. on-demand task placement"
+requires-python = ">=3.10"
+dependencies = [
+    "dask[distributed]>=2024.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
