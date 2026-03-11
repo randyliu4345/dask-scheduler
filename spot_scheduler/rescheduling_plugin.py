@@ -58,11 +58,13 @@ class DynamicReschedulingPlugin(SchedulerPlugin):
         self.actual_runtimes: Dict[str, float] = {}
         self.interrupted_tasks: Set[str] = set()
         self.start_wall_time: Optional[float] = None
+        self.scheduler: Optional[Any] = None
 
     def start(self, scheduler: Any) -> None:
         """Record when the scheduler starts."""
         self.start_wall_time = time.time()
         logger.debug("DynamicReschedulingPlugin active")
+        self.scheduler = scheduler
 
     def transition(
         self,
@@ -74,6 +76,8 @@ class DynamicReschedulingPlugin(SchedulerPlugin):
     ) -> None:
         """Track task state transitions."""
         current_time = time.time()
+
+        logger.debug("TRANSITION: %s %s %s", key, start, finish)
 
         # Track when task starts processing/executing
         if finish in ("processing", "executing"):

@@ -32,7 +32,7 @@ def run_dag(
     task_fn: Callable[..., Any],
     deadline: float,
     profile_path: str | Path = "runtimes.json",
-    spot_interrupt_buffer: float = 0.2,
+    spot_interrupt_buffer: float = 1,
     profiling_mode: bool = False,
     interruption_attempts: Dict[str, int] | None = None,
 ) -> Dict[str, Any]:
@@ -157,6 +157,7 @@ def run_dag(
                 resource = (
                     {"spot": 1} if assignment[task] == "spot" else {"ondemand": 1}
                 )
+                logger.info("Submitting %s", task)
                 futures[task] = client.submit(
                     task_fn,
                     task,
@@ -228,6 +229,7 @@ def run_dag(
         not_done = None
         if active_futures:
             try:
+                logger.info(active_futures)
                 done, not_done = dd.wait(active_futures, return_when="FIRST_COMPLETED", timeout=0.5)
             except TimeoutError:
                 submit_ready_tasks()
@@ -321,13 +323,13 @@ def run_dag(
                         del futures[task]
                     if task in submitted_tasks:
                         submitted_tasks.remove(task)
-                    assignment[task] = "on-demand"
+                    assignment[task] = "ondemand"
                     resubmitted_tasks.add(task)
                     # Note: Task will be resubmitted by submit_ready_tasks() if dependencies are ready
                     
                 elif task not in submitted_tasks:
                     # Task was interrupted but not yet submitted - update assignment and try to submit
-                    assignment[task] = "on-demand"
+                    assignment[task] = "ondemand"
                     # Don't mark as resubmitted yet - only mark when actually submitted
                     # Check if dependencies are ready and submit immediately if so
                     deps = dag[task]
