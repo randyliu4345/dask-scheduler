@@ -32,7 +32,7 @@ ODDS_OF_FAIL_PER_HOUR = 2.0 / 24.0
 
 NUM_DAGS = 10
 NUM_TRIALS_PER_DAG = 10000
-HISTOGRAM_PATH = "evaluation/evaluation_penalty_histogram.png"
+HISTOGRAM_PATH = "evaluation_penalty_histogram.png"
 
 PRINT_FAILURES = True
 FAILURE_PRINT_LIMIT = 200
@@ -41,7 +41,7 @@ SWEEP_ODDS = True
 ODDS_SWEEP_MIN_PER_DAY = 1
 ODDS_SWEEP_MAX_PER_DAY = 12
 ODDS_SWEEP_STEP_PER_DAY = 1
-ODDS_SWEEP_PLOT_PATH = "evaluation/evaluation_penalty_vs_odds.png"
+ODDS_SWEEP_PLOT_PATH = "evaluation_penalty_vs_odds.png"
 
 @dataclass
 class DagParams:
@@ -247,6 +247,7 @@ def simulate_failures(
 ) -> tuple[float, float]:
     total_penalty = 0.0
     max_single_penalty = 0.0
+    failed_spot_task_ids: set[int] = set()
     for t in g.tasks.values():
         if not t.slack_used_min or t.duration_min <= 0.0:
             continue
@@ -260,6 +261,7 @@ def simulate_failures(
         lam = odds_per_hour * duration_hours
         p_fail = 1.0 - math.exp(-lam) if lam > 0.0 else 0.0
         if rng.random() < p_fail:
+            failed_spot_task_ids.add(t.id)
             base_delay = rng.uniform(0.0, t.duration_min)
             slack_here = t.slack_min or 0.0
             penalty = max(0.0, base_delay - slack_here)
@@ -269,7 +271,7 @@ def simulate_failures(
             total_penalty += penalty
             max_single_penalty = max(max_single_penalty, penalty)
 
-    return total_penalty, max_single_penalty
+    return total_penalty, max_single_penalty, failed_spot_task_ids
 
 
 def print_dag_tree(
@@ -423,14 +425,13 @@ def run_evaluation() -> None:
         for trial_idx in range(NUM_TRIALS_PER_DAG):
             compute_slack_usage(g)  # Reset before each trial (simulate_failures mutates)
             sim_rng = random.Random(base_seed + 12345 + dag_idx * 10000 + trial_idx)
-            total_penalty, max_penalty = simulate_failures(
+            total_penalty, max_penalty, _ = simulate_failures(
                 g,
                 ratio_threshold=RATIO,
                 odds_per_hour=ODDS_OF_FAIL_PER_HOUR,
                 rng=sim_rng,
                 print_state=print_state,
             )
-            # Use max(penalties) = max single-node penalty in this trial
             pct = 100.0 * max_penalty / total_min if total_min > 0 else 0.0
             penalty_ratios.append(pct)
 
@@ -484,10 +485,14 @@ def run_odds_sweep() -> None:
     odds_values = [v / 24.0 for v in per_day_values]
     mean_total_penalties: list[float] = []
     mean_penalty_over_critical_path: list[float] = []
+    mean_spot_utilization_pct: list[float] = []
+    mean_cost: list[float] = []
 
     for odds_per_hour in odds_values:
         total_penalty_sum = 0.0
         penalty_over_cp_sum = 0.0
+        spot_utilization_sum = 0.0
+        cost_sum = 0.0
         trials_count = 0
 
         for dag_idx in range(NUM_DAGS):
@@ -501,12 +506,13 @@ def run_odds_sweep() -> None:
                 seed=base_seed + dag_idx,
             )
             g = build_random_dag(params)
-            total_min, _path, _ = critical_path(g)
+            total_min, path, _ = critical_path(g)
             compute_slack(g, total_min)
+            critical_path_set = set(path)
+            all_nodes_time = sum(t.duration_min for t in g.tasks.values())
 
             for trial_idx in range(NUM_TRIALS_PER_DAG):
                 compute_slack_usage(g)
-                # Make the RNG depend on sweep point + dag + trial for repeatability
                 sim_rng = random.Random(
                     base_seed
                     + 99999
@@ -514,16 +520,27 @@ def run_odds_sweep() -> None:
                     + dag_idx * 10000
                     + trial_idx
                 )
-                total_penalty, _max_penalty = simulate_failures(
+                total_penalty, _max_penalty, failed_spot_ids = simulate_failures(
                     g,
                     ratio_threshold=RATIO,
                     odds_per_hour=odds_per_hour,
                     rng=sim_rng,
-                    print_state=None,  # never spam stdout during sweep
+                    print_state=None,
                 )
                 total_penalty_sum += total_penalty
                 if total_min > 0.0:
                     penalty_over_cp_sum += total_penalty / total_min
+                if all_nodes_time > 0.0:
+                    spot_success_runtime = sum(
+                        t.duration_min for t in g.tasks.values()
+                        if t.id not in critical_path_set and t.id not in failed_spot_ids
+                    )
+                    spot_utilization_sum += 100.0 * spot_success_runtime / all_nodes_time
+                    cost = (
+                        (all_nodes_time - spot_success_runtime) / all_nodes_time
+                        + (spot_success_runtime / all_nodes_time) * 0.1
+                    )
+                    cost_sum += cost
                 trials_count += 1
 
         mean_total_penalties.append(
@@ -532,10 +549,16 @@ def run_odds_sweep() -> None:
         mean_penalty_over_critical_path.append(
             penalty_over_cp_sum / trials_count if trials_count else 0.0
         )
+        mean_spot_utilization_pct.append(
+            spot_utilization_sum / trials_count if trials_count else 0.0
+        )
+        mean_cost.append(cost_sum / trials_count if trials_count else 0.0)
         print(
             f"  Sweep {odds_per_hour*24:.0f}/day: "
             f"mean total penalty = {mean_total_penalties[-1]:.2f} min, "
-            f"mean penalty/critical path = {mean_penalty_over_critical_path[-1]:.4f}"
+            f"mean penalty/critical path = {mean_penalty_over_critical_path[-1]:.4f}, "
+            f"avg spot utilization = {mean_spot_utilization_pct[-1]:.2f}%, "
+            f"avg cost = {mean_cost[-1]:.4f}"
         )
 
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -567,6 +590,36 @@ def run_odds_sweep() -> None:
     print(f"Saved sweep ratio plot to {ratio_plot_path}")
     plt.close()
 
+    util_plot_path = ODDS_SWEEP_PLOT_PATH.replace(".png", "_spot_utilization.png")
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(per_day_values, mean_spot_utilization_pct, marker="o", linewidth=2)
+    ax.set_xlabel("Failure rate (events/day)")
+    ax.set_ylabel("Avg spot utilization (%)")
+    ax.set_title(
+        "Avg spot utilization vs failure rate\n"
+        "(spot_success_runtime / total_runtime_all_nodes; failed spot tasks excluded)"
+    )
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(util_plot_path, dpi=120)
+    print(f"Saved spot utilization plot to {util_plot_path}")
+    plt.close()
+
+    cost_plot_path = ODDS_SWEEP_PLOT_PATH.replace(".png", "_cost.png")
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(per_day_values, mean_cost, marker="o", linewidth=2)
+    ax.set_xlabel("Failure rate (events/day)")
+    ax.set_ylabel("Avg cost")
+    ax.set_title(
+        "Avg cost vs failure rate\n"
+        "((T - spot_success) / T + (spot_success / T) * 0.1; on-demand=1, spot=0.1)"
+    )
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(cost_plot_path, dpi=120)
+    print(f"Saved cost plot to {cost_plot_path}")
+    plt.close()
+
 
 def main() -> None:
     if SWEEP_ODDS:
@@ -589,7 +642,7 @@ def main() -> None:
         compute_slack_usage(g)
         sim_rng = random.Random((SEED or 0) + 12345)
         print_state = [FAILURE_PRINT_LIMIT] if PRINT_FAILURES else None
-        total_penalty, max_penalty = simulate_failures(
+        total_penalty, max_penalty, _ = simulate_failures(
             g,
             ratio_threshold=RATIO,
             odds_per_hour=ODDS_OF_FAIL_PER_HOUR,
